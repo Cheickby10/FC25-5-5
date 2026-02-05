@@ -1,1 +1,80 @@
+import math
+import csv
+import os
+from collections import defaultdict
+from datetime import datetime
 
+DATA_PATH = "data/matches.csv"
+
+teams = defaultdict(lambda: {"scored": [], "conceded": [], "dates": []})
+
+def load_data():
+    if not os.path.exists(DATA_PATH):
+        return
+    with open(DATA_PATH, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            add_internal(r["team_a"], r["team_b"],
+                         int(r["ga"]), int(r["gb"]),
+                         r["date"], save=False)
+
+def save_match(a, b, ga, gb):
+    os.makedirs("data", exist_ok=True)
+    file_exists = os.path.exists(DATA_PATH)
+    with open(DATA_PATH, "a", newline="", encoding="utf-8") as f:
+        fieldnames = ["team_a", "team_b", "ga", "gb", "date"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            "team_a": a,
+            "team_b": b,
+            "ga": ga,
+            "gb": gb,
+            "date": datetime.now().isoformat()
+        })
+
+def add_internal(a, b, ga, gb, date, save=True):
+    teams[a]["scored"].append((ga, date))
+    teams[a]["conceded"].append((gb, date))
+    teams[b]["scored"].append((gb, date))
+    teams[b]["conceded"].append((ga, date))
+    if save:
+        save_match(a, b, ga, gb)
+
+def weight(date):
+    days = (datetime.now() - datetime.fromisoformat(date)).days
+    return max(0.3, math.exp(-days / 10))
+
+def avg_weighted(values):
+    num, den = 0, 0
+    for v, d in values:
+        w = weight(d)
+        num += v * w
+        den += w
+    return num / den if den else 0
+
+def predict(a, b):
+    if len(teams[a]["scored"]) < 3 or len(teams[b]["scored"]) < 3:
+        return {"alert": "⚠️ Données insuffisantes"}
+
+    la = avg_weighted(teams[a]["scored"])
+    lb = avg_weighted(teams[b]["scored"])
+
+    scores = {}
+    for ga in range(0, 8):
+        for gb in range(0, 8):
+            p = (la ** ga * math.exp(-la) / math.factorial(ga)) * \
+                (lb ** gb * math.exp(-lb) / math.factorial(gb))
+            scores[f"{ga}-{gb}"] = p
+
+    top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
+    spread = max(scores.values()) - sorted(scores.values())[-2]
+
+    confidence = "🟢 élevée" if spread > 0.05 else "🟠 moyenne"
+
+    return {
+        "top_scores": [s for s, _ in top],
+        "confidence": confidence,
+        "distribution": top
+    }
