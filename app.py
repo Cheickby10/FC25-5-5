@@ -8,7 +8,19 @@ st.title("🤖 FC25 Rush – IA de prédiction")
 
 st.header("➕ Ajouter des scores passés")
 text = st.text_area("Format : Equipe A 3-2 Equipe B", height=150)
+import re
 
+pattern = re.compile(r"(.+?)\s(\d+)-(\d+)\s(.+)")
+
+if st.button("Ajouter & entraîner"):
+    for line in text.splitlines():
+        m = pattern.match(line)
+        if not m:
+            st.warning(f"Ignoré : {line}")
+            continue
+        a, ga, gb, b = m.groups()
+        add_internal(a.strip(), b.strip(), int(ga), int(gb), "")
+        st.success(f"Ajouté : {line}")
 if st.button("Ajouter & entraîner"):
     for line in text.splitlines():
         try:
