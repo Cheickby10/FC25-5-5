@@ -3,9 +3,7 @@ import pandas as pd
 import re
 from pathlib import Path
 import matplotlib.pyplot as plt
-import seaborn as sns
 from reportlab.pdfgen import canvas
-from datetime import datetime
 from engine import IAEngine  # ton moteur IA existant
 
 # -----------------------------
@@ -16,7 +14,7 @@ DATA_PATH = Path("data/matches.csv")
 st.title("⚽ FC25 5×5 Rush – IA Prédictive")
 
 # -----------------------------
-# Section 1 : Ajouter des matchs
+# Section 1 : Ajouter plusieurs matchs
 # -----------------------------
 st.header("📥 Ajouter plusieurs matchs en texte")
 st.write("Format par ligne : `EquipeA scoreA-scoreB EquipeB`")
@@ -72,10 +70,10 @@ if DATA_PATH.exists():
         # Graphique distribution des scores
         st.subheader("Distribution des scores")
         plt.figure(figsize=(10,4))
-        sns.histplot(df["ga"], color="blue", kde=True, label="Team A")
-        sns.histplot(df["gb"], color="red", kde=True, label="Team B")
+        plt.hist(df["ga"], bins=range(0, max(df[["ga","gb"]].max()+2,7)), color="blue", alpha=0.6, label="Team A")
+        plt.hist(df["gb"], bins=range(0, max(df[["ga","gb"]].max()+2,7)), color="red", alpha=0.6, label="Team B")
         plt.xlabel("Buts")
-        plt.ylabel("Fréquence")
+        plt.ylabel("Nombre de fois")
         plt.legend()
         st.pyplot(plt.gcf())
 
@@ -92,16 +90,13 @@ else:
 # -----------------------------
 st.header("🤖 Prédictions IA")
 
-# Entrée équipes
 team_a = st.text_input("Équipe A pour la prédiction")
 team_b = st.text_input("Équipe B pour la prédiction")
 
 if st.button("Prédire le match") and team_a and team_b:
     if DATA_PATH.exists() and len(pd.read_csv(DATA_PATH)) > 0:
         ia = IAEngine(DATA_PATH)
-        # Entraîne / met à jour l'IA
         ia.train()
-        # Prédiction
         score_exp, confidence, top5 = ia.predict(team_a, team_b)
         st.subheader("⚡ Résultat attendu")
         st.write(f"**Score attendu :** {score_exp[0]} - {score_exp[1]}")
@@ -110,9 +105,7 @@ if st.button("Prédire le match") and team_a and team_b:
         for s, p in top5:
             st.write(f"{s[0]}-{s[1]} ({p*100:.1f}%)")
 
-        # -----------------------------
         # Export PDF
-        # -----------------------------
         def export_pdf(result, t1, t2):
             c = canvas.Canvas(f"prediction_{t1}_{t2}.pdf")
             c.drawString(50, 800, f"Match : {t1} vs {t2}")
