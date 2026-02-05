@@ -1,148 +1,136 @@
+import streamlit as st
 import pandas as pd
-import numpy as np
-from collections import Counter, defaultdict
-from datetime import datetime, timedelta
-import json
-import os
+import re
+from pathlib import Path
+import matplotlib.pyplot as plt
+from reportlab.pdfgen import canvas
+from engine import IAEngine
+from datetime import datetime
 
-class IAEngine:
-    """
-    IAEngine complet pour FC25 5x5 Rush
-    - Entraînement automatique sur historique CSV
-    - Mémoire persistante par équipe
-    - Pondération des matchs récents
-    - Calcul du score exact, top 5 scores probables
-    - Fiabilité réelle basée sur variance et cohérence des équipes
-    - Détection de matchs répétitifs/incestueux
-    - Historique complet pour apprentissage continu
-    """
+# -----------------------------
+# Configuration
+# -----------------------------
+st.set_page_config(page_title="FC25 5x5 Rush - IA", layout="wide")
+DATA_PATH = Path("data/matches.csv")
+st.title("⚽ FC25 5×5 Rush – IA Prédictive")
 
-    def __init__(self, csv_path, memory_path="data/memory.json"):
-        self.csv_path = csv_path
-        self.memory_path = memory_path
-        self.df = pd.read_csv(csv_path) if os.path.exists(csv_path) else pd.DataFrame(columns=["team_a","team_b","ga","gb","date"])
-        self.team_stats = {}  # Mémoire par équipe
-        self.score_counts = None
-        self.recent_weight = 1.5  # poids des matchs récents
-        self.top_n_scores = 5
-        self.load_memory()
-        self.prepare_stats()
+# -----------------------------
+# Section 1 : Ajouter plusieurs matchs
+# -----------------------------
+st.header("📥 Ajouter plusieurs matchs")
+st.write("Format par ligne : `EquipeA scoreA-scoreB EquipeB`")
 
-    # -----------------------------
-    # Mémoire persistante
-    # -----------------------------
-    def load_memory(self):
-        if os.path.exists(self.memory_path):
-            with open(self.memory_path, "r") as f:
-                self.memory = json.load(f)
+texte_matchs = st.text_area("Collez vos matchs ici (un match par ligne)", height=200)
+
+if st.button("Ajouter les matchs au bot"):
+    if texte_matchs:
+        lignes = texte_matchs.strip().split("\n")
+        nouvelles_lignes = []
+        for ligne in lignes:
+            match = re.match(r"(.+?) (\d+)-(\d+) (.+)", ligne.strip())
+            if match:
+                nouvelles_lignes.append({
+                    "team_a": match.group(1).strip(),
+                    "team_b": match.group(4).strip(),
+                    "ga": int(match.group(2)),
+                    "gb": int(match.group(3)),
+                    "date": datetime.today().strftime("%Y-%m-%d")
+                })
+            else:
+                st.warning(f"Ligne invalide ignorée : {ligne}")
+
+        if nouvelles_lignes:
+            if DATA_PATH.exists():
+                df = pd.read_csv(DATA_PATH)
+            else:
+                df = pd.DataFrame(columns=["team_a","team_b","ga","gb","date"])
+            df = pd.concat([df, pd.DataFrame(nouvelles_lignes)], ignore_index=True)
+            df.to_csv(DATA_PATH, index=False)
+            st.success(f"{len(nouvelles_lignes)} matchs ajoutés et sauvegardés !")
         else:
-            self.memory = {}
+            st.error("Aucun match valide à ajouter.")
+    else:
+        st.warning("Veuillez coller vos matchs avant.")
 
-    def save_memory(self):
-        with open(self.memory_path, "w") as f:
-            json.dump(self.memory, f, indent=2)
+# -----------------------------
+# Section 2 : Dashboard
+# -----------------------------
+st.header("📊 Dashboard des performances")
 
-    # -----------------------------
-    # Préparer les statistiques par équipe
-    # -----------------------------
-    def prepare_stats(self):
-        df = self.df.copy()
-        if 'date' not in df.columns:
-            df['date'] = datetime.today().strftime("%Y-%m-%d")
-        df['weight'] = 1.0
+if DATA_PATH.exists():
+    df = pd.read_csv(DATA_PATH)
+    if not df.empty:
+        nb_matchs = len(df)
+        buts_moyens = (df["ga"].sum() + df["gb"].sum()) / nb_matchs
+        variance = df[["ga","gb"]].stack().var()
+        fiabilite = max(0, 100 - variance*10)
 
-        # Pondération des matchs récents
-        dates = pd.to_datetime(df['date'])
-        days_ago = (datetime.today() - dates).dt.days
-        df['weight'] = np.exp(-days_ago/30) * self.recent_weight  # plus récent = plus influent
+        # Stats clés
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Matchs appris", nb_matchs)
+        col2.metric("Buts moyens par match", f"{buts_moyens:.2f}")
+        col3.metric("Fiabilité réelle (%)", f"{fiabilite:.2f}")
 
-        # Mémoire des équipes
-        teams = set(df['team_a']).union(set(df['team_b']))
-        self.team_stats = {}
-        for team in teams:
-            a_stats = df[df['team_a']==team]
-            b_stats = df[df['team_b']==team]
-            poids_total = a_stats['weight'].sum() + b_stats['weight'].sum()
-            buts_marques = (a_stats['ga']*a_stats['weight']).sum() + (b_stats['gb']*b_stats['weight']).sum()
-            buts_encaisses = (a_stats['gb']*a_stats['weight']).sum() + (b_stats['ga']*b_stats['weight']).sum()
-            self.team_stats[team] = {
-                "buts_marques_moy": buts_marques/poids_total if poids_total>0 else 0,
-                "buts_encaisses_moy": buts_encaisses/poids_total if poids_total>0 else 0,
-                "matchs_joues": len(a_stats)+len(b_stats)
-            }
-            # Sauvegarde dans mémoire persistante
-            self.memory[team] = self.team_stats[team]
-        self.save_memory()
+        # Graphique distribution des scores
+        st.subheader("Distribution des scores")
+        plt.figure(figsize=(10,4))
+        plt.hist(df["ga"], bins=range(0,max(df[["ga","gb"]].max()+2,7)), color="blue", alpha=0.6, label="Team A")
+        plt.hist(df["gb"], bins=range(0,max(df[["ga","gb"]].max()+2,7)), color="red", alpha=0.6, label="Team B")
+        plt.xlabel("Buts")
+        plt.ylabel("Nombre de fois")
+        plt.legend()
+        st.pyplot(plt.gcf())
 
-        # Historique des scores
-        self.score_counts = Counter([(row['ga'],row['gb']) for idx,row in df.iterrows()])
+        # Derniers matchs ajoutés
+        st.subheader("Derniers matchs")
+        st.dataframe(df.tail(10))
+    else:
+        st.info("Le fichier CSV est vide, ajoutez des matchs pour générer le dashboard.")
+else:
+    st.info("Aucun fichier CSV trouvé. Ajoutez des matchs pour commencer.")
 
-    # -----------------------------
-    # Détection de matchs incestueux
-    # -----------------------------
-    def detect_incestuous(self, team_a, team_b):
-        df_recent = self.df.tail(20)  # derniers 20 matchs
-        repet = df_recent[((df_recent['team_a']==team_a)&(df_recent['team_b']==team_b))|
-                          ((df_recent['team_a']==team_b)&(df_recent['team_b']==team_a))]
-        return len(repet)>2  # trop répété
+# -----------------------------
+# Section 3 : Prédiction IA
+# -----------------------------
+st.header("🤖 Prédictions IA")
 
-    # -----------------------------
-    # Entraîner IA (réentraînement automatique)
-    # -----------------------------
-    def train(self):
-        self.prepare_stats()
-        # Score counts déjà calculé
-        # Possibilité d'ajouter apprentissage ML ou xG ici plus tard
+team_a = st.text_input("Équipe A pour la prédiction")
+team_b = st.text_input("Équipe B pour la prédiction")
 
-    # -----------------------------
-    # Prédire un match
-    # -----------------------------
-    def predict(self, team_a, team_b):
-        # Détection matchs incestueux
-        if self.detect_incestuous(team_a, team_b):
-            incest_warning = True
-        else:
-            incest_warning = False
+if st.button("Prédire le match") and team_a and team_b:
+    if DATA_PATH.exists() and len(pd.read_csv(DATA_PATH))>0:
+        ia = IAEngine(DATA_PATH)
+        ia.train()
+        score_exp, confidence, top5, incest = ia.predict(team_a, team_b)
 
-        # Score attendu par moyenne des stats
-        stats_a = self.team_stats.get(team_a, {"buts_marques_moy":1,"buts_encaisses_moy":1})
-        stats_b = self.team_stats.get(team_b, {"buts_marques_moy":1,"buts_encaisses_moy":1})
-        score_a = round((stats_a['buts_marques_moy'] + stats_b['buts_encaisses_moy'])/2)
-        score_b = round((stats_b['buts_marques_moy'] + stats_a['buts_encaisses_moy'])/2)
+        st.subheader("⚡ Résultat attendu")
+        st.write(f"**Score attendu :** {score_exp[0]} - {score_exp[1]}")
+        st.write(f"**Fiabilité :** {confidence*100:.1f}%")
+        if incest:
+            st.warning("⚠️ Ce match a été joué trop souvent récemment (incestueux)")
 
-        # Top N scores probables
-        top_scores = self.score_counts.most_common(self.top_n_scores)
-        total = sum(self.score_counts.values())
-        if total>0:
-            top5_prob = [ (s, c/total) for s,c in top_scores ]
-        else:
-            # fallback autour du score attendu
-            top5_prob = [
-                ((score_a, score_b),0.4),
-                ((score_a+1, score_b),0.2),
-                ((score_a, score_b+1),0.2),
-                ((max(score_a-1,0), score_b),0.1),
-                ((score_a, max(score_b-1,0)),0.1)
-            ]
+        st.write("**Top 5 scores les plus probables :**")
+        for s,p in top5:
+            st.write(f"{s[0]}-{s[1]} ({p*100:.1f}%)")
 
-        # Fiabilité : inverse de variance ajustée
-        if self.df.empty:
-            confidence = 0.5
-        else:
-            variance = self.df[["ga","gb"]].stack().var()
-            confidence = max(0.1, min(0.99, 1/(1+variance)))
+        # Export PDF
+        def export_pdf(result, t1, t2):
+            c = canvas.Canvas(f"prediction_{t1}_{t2}.pdf")
+            c.drawString(50,800,f"Match : {t1} vs {t2}")
+            c.drawString(50,770,f"Score attendu : {result[0][0]} - {result[0][1]}")
+            c.drawString(50,740,f"Fiabilité : {result[1]*100:.1f}%")
+            if result[3]:
+                c.drawString(50,710,"⚠️ Match incestueux détecté")
+            y = 680
+            c.drawString(50,y,"Top 5 scores probables :")
+            y -= 20
+            for s,p in result[2]:
+                c.drawString(50,y,f"{s[0]}-{s[1]} ({p*100:.1f}%)")
+                y -= 20
+            c.save()
 
-        return (score_a, score_b), confidence, top5_prob, incest_warning
-
-    # -----------------------------
-    # Ajouter un match manuel à l'historique
-    # -----------------------------
-    def add_match(self, team_a, team_b, score_a, score_b, date=None):
-        if date is None:
-            date = datetime.today().strftime("%Y-%m-%d")
-        new_row = {"team_a":team_a, "team_b":team_b, "ga":score_a, "gb":score_b, "date":date}
-        self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
-        # Sauvegarde CSV
-        self.df.to_csv(self.csv_path, index=False)
-        # Réentraîner IA
-        self.train()
+        if st.button("📄 Exporter la prédiction en PDF"):
+            export_pdf((score_exp, confidence, top5, incest), team_a, team_b)
+            st.success("PDF généré avec succès !")
+    else:
+        st.warning("Pas assez de données pour prédire ce match.")
