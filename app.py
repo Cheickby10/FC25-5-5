@@ -44,3 +44,18 @@ if st.button("Prédire"):
         st.subheader("Top 5 scores probables")
         st.write(res["top_scores"])
         st.write("Confiance :", res["confidence"])
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+
+def export_pdf(result, team1, team2):
+    c = canvas.Canvas("prediction.pdf", pagesize=A4)
+    c.drawString(50, 800, f"Match : {team1} vs {team2}")
+    c.drawString(50, 770, f"Gagnant probable : {result['winner']}")
+    c.drawString(50, 740, f"Buts estimés : {result['expected_goals']}")
+
+    y = 710
+    for s, p in result["top_scores"]:
+        c.drawString(50, y, f"{s} : {p}%")
+        y -= 20
+
+    c.save()
