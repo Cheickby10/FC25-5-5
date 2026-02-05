@@ -1,136 +1,104 @@
 import streamlit as st
 import pandas as pd
-import re
-from pathlib import Path
+import numpy as np
 import matplotlib.pyplot as plt
-from reportlab.pdfgen import canvas
-from engine import IAEngine
+import seaborn as sns
+import json
 from datetime import datetime
 
-# -----------------------------
-# Configuration
-# -----------------------------
-st.set_page_config(page_title="FC25 5x5 Rush - IA", layout="wide")
-DATA_PATH = Path("data/matches.csv")
+# --- CONFIG ---
+DATA_FILE = "data/matches.csv"
+MEMORY_FILE = "data/memory.json"
+
+st.set_page_config(page_title="FC25 5x5 Rush IA", layout="wide")
+
+# --- CHARGEMENT DES DONNÉES ---
+@st.cache_data
+def load_data():
+    try:
+        df = pd.read_csv(DATA_FILE)
+    except FileNotFoundError:
+        df = pd.DataFrame(columns=["date", "team_a", "team_b", "score_a", "score_b"])
+    return df
+
+df = load_data()
+
+# --- FONCTIONS ---
+def save_data(df):
+    df.to_csv(DATA_FILE, index=False)
+
+def add_matches(text_input):
+    lines = text_input.strip().split("\n")
+    new_matches = []
+    for line in lines:
+        try:
+            parts = line.split()
+            team_a = parts[0]
+            score_a, score_b = map(int, parts[1].split("-"))
+            team_b = parts[2]
+            new_matches.append({
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "team_a": team_a,
+                "team_b": team_b,
+                "score_a": score_a,
+                "score_b": score_b
+            })
+        except:
+            continue
+    if new_matches:
+        df_new = pd.DataFrame(new_matches)
+        df_updated = pd.concat([df, df_new], ignore_index=True)
+        save_data(df_updated)
+        return df_updated
+    return df
+
+def compute_stats(df):
+    if df.empty:
+        return 0, 0, 0
+    goals = pd.concat([df["score_a"], df["score_b"]])
+    mean_goals = goals.mean()
+    variance = goals.var()
+    reliability = min(100, max(0, 100 - variance))  # exemple simple
+    return mean_goals, variance, reliability
+
+# --- DASHBOARD ---
 st.title("⚽ FC25 5×5 Rush – IA Prédictive")
+st.write("IA auto-apprenante basée sur des matchs réels FIFA")
 
-# -----------------------------
-# Section 1 : Ajouter plusieurs matchs
-# -----------------------------
-st.header("📥 Ajouter plusieurs matchs")
-st.write("Format par ligne : `EquipeA scoreA-scoreB EquipeB`")
+st.subheader("Ajouter plusieurs matchs (format: TeamA ScoreA-ScoreB TeamB, un par ligne)")
+match_input = st.text_area("Exemple:\nPorto 2-1 Milano\nACMilan 3-3 Liverpool")
+if st.button("Ajouter les matchs"):
+    df = add_matches(match_input)
+    st.success(f"{len(match_input.strip().splitlines())} matchs ajoutés avec succès!")
 
-texte_matchs = st.text_area("Collez vos matchs ici (un match par ligne)", height=200)
+st.subheader("État du moteur IA")
+matches_count = len(df)
+mean_goals, variance, reliability = compute_stats(df)
 
-if st.button("Ajouter les matchs au bot"):
-    if texte_matchs:
-        lignes = texte_matchs.strip().split("\n")
-        nouvelles_lignes = []
-        for ligne in lignes:
-            match = re.match(r"(.+?) (\d+)-(\d+) (.+)", ligne.strip())
-            if match:
-                nouvelles_lignes.append({
-                    "team_a": match.group(1).strip(),
-                    "team_b": match.group(4).strip(),
-                    "ga": int(match.group(2)),
-                    "gb": int(match.group(3)),
-                    "date": datetime.today().strftime("%Y-%m-%d")
-                })
-            else:
-                st.warning(f"Ligne invalide ignorée : {ligne}")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Matches appris", matches_count)
+col2.metric("Buts moyens", f"{mean_goals:.2f}")
+col3.metric("Variance", f"{variance:.2f}")
+col4.metric("Fiabilité réelle", f"{reliability:.2f}%")
 
-        if nouvelles_lignes:
-            if DATA_PATH.exists():
-                df = pd.read_csv(DATA_PATH)
-            else:
-                df = pd.DataFrame(columns=["team_a","team_b","ga","gb","date"])
-            df = pd.concat([df, pd.DataFrame(nouvelles_lignes)], ignore_index=True)
-            df.to_csv(DATA_PATH, index=False)
-            st.success(f"{len(nouvelles_lignes)} matchs ajoutés et sauvegardés !")
-        else:
-            st.error("Aucun match valide à ajouter.")
-    else:
-        st.warning("Veuillez coller vos matchs avant.")
-
-# -----------------------------
-# Section 2 : Dashboard
-# -----------------------------
-st.header("📊 Dashboard des performances")
-
-if DATA_PATH.exists():
-    df = pd.read_csv(DATA_PATH)
-    if not df.empty:
-        nb_matchs = len(df)
-        buts_moyens = (df["ga"].sum() + df["gb"].sum()) / nb_matchs
-        variance = df[["ga","gb"]].stack().var()
-        fiabilite = max(0, 100 - variance*10)
-
-        # Stats clés
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Matchs appris", nb_matchs)
-        col2.metric("Buts moyens par match", f"{buts_moyens:.2f}")
-        col3.metric("Fiabilité réelle (%)", f"{fiabilite:.2f}")
-
-        # Graphique distribution des scores
-        st.subheader("Distribution des scores")
-        plt.figure(figsize=(10,4))
-        plt.hist(df["ga"], bins=range(0,max(df[["ga","gb"]].max()+2,7)), color="blue", alpha=0.6, label="Team A")
-        plt.hist(df["gb"], bins=range(0,max(df[["ga","gb"]].max()+2,7)), color="red", alpha=0.6, label="Team B")
+st.subheader("Distribution des scores")
+if not df.empty:
+    plt.figure(figsize=(10,5))
+    goals = pd.concat([df["score_a"], df["score_b"]])
+    goals = pd.to_numeric(goals, errors='coerce').dropna()
+    if not goals.empty:
+        sns.histplot(goals, bins=range(int(goals.min()), int(goals.max())+2), kde=False)
         plt.xlabel("Buts")
-        plt.ylabel("Nombre de fois")
-        plt.legend()
-        st.pyplot(plt.gcf())
-
-        # Derniers matchs ajoutés
-        st.subheader("Derniers matchs")
-        st.dataframe(df.tail(10))
+        plt.ylabel("Nombre de matchs")
+        plt.title("Distribution des buts marqués")
+        st.pyplot(plt)
     else:
-        st.info("Le fichier CSV est vide, ajoutez des matchs pour générer le dashboard.")
+        st.write("Pas de données valides pour l’histogramme.")
 else:
-    st.info("Aucun fichier CSV trouvé. Ajoutez des matchs pour commencer.")
+    st.write("Aucun match enregistré.")
 
-# -----------------------------
-# Section 3 : Prédiction IA
-# -----------------------------
-st.header("🤖 Prédictions IA")
-
-team_a = st.text_input("Équipe A pour la prédiction")
-team_b = st.text_input("Équipe B pour la prédiction")
-
-if st.button("Prédire le match") and team_a and team_b:
-    if DATA_PATH.exists() and len(pd.read_csv(DATA_PATH))>0:
-        ia = IAEngine(DATA_PATH)
-        ia.train()
-        score_exp, confidence, top5, incest = ia.predict(team_a, team_b)
-
-        st.subheader("⚡ Résultat attendu")
-        st.write(f"**Score attendu :** {score_exp[0]} - {score_exp[1]}")
-        st.write(f"**Fiabilité :** {confidence*100:.1f}%")
-        if incest:
-            st.warning("⚠️ Ce match a été joué trop souvent récemment (incestueux)")
-
-        st.write("**Top 5 scores les plus probables :**")
-        for s,p in top5:
-            st.write(f"{s[0]}-{s[1]} ({p*100:.1f}%)")
-
-        # Export PDF
-        def export_pdf(result, t1, t2):
-            c = canvas.Canvas(f"prediction_{t1}_{t2}.pdf")
-            c.drawString(50,800,f"Match : {t1} vs {t2}")
-            c.drawString(50,770,f"Score attendu : {result[0][0]} - {result[0][1]}")
-            c.drawString(50,740,f"Fiabilité : {result[1]*100:.1f}%")
-            if result[3]:
-                c.drawString(50,710,"⚠️ Match incestueux détecté")
-            y = 680
-            c.drawString(50,y,"Top 5 scores probables :")
-            y -= 20
-            for s,p in result[2]:
-                c.drawString(50,y,f"{s[0]}-{s[1]} ({p*100:.1f}%)")
-                y -= 20
-            c.save()
-
-        if st.button("📄 Exporter la prédiction en PDF"):
-            export_pdf((score_exp, confidence, top5, incest), team_a, team_b)
-            st.success("PDF généré avec succès !")
-    else:
-        st.warning("Pas assez de données pour prédire ce match.")
+st.subheader("Historique des matchs")
+if not df.empty:
+    st.dataframe(df.sort_values(by="date", ascending=False))
+else:
+    st.write("Aucun match enregistré.")
