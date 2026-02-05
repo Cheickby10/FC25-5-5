@@ -134,3 +134,130 @@ def predict(team_a, team_b):
         "confidence": round(confidence, 2),
         "samples": n
       }
+import pandas as pd
+import math
+from collections import Counter
+from datetime import datetime
+
+DATA_PATH = "data/matches.csv"
+
+def load_data():
+    try:
+        return pd.read_csv(DATA_PATH)
+    except:
+        return pd.DataFrame(columns=["team_a","team_b","ga","gb","date"])
+
+def save_data(df):
+    df.to_csv(DATA_PATH, index=False)
+
+# =========================
+# AJOUT MATCH + AUTO-UPDATE
+# =========================
+def add_match(team_a, team_b, ga, gb):
+    df = load_data()
+    new_row = {
+        "team_a": team_a,
+        "team_b": team_b,
+        "ga": ga,
+        "gb": gb,
+        "date": datetime.now().isoformat()
+    }
+    df = pd.concat([df, pd.DataFrame([new_row])])
+    save_data(df)
+
+# =========================
+# MÉMOIRE PAR ÉQUIPE
+# =========================
+def team_profile(team, df):
+    games = df[(df.team_a == team) | (df.team_b == team)]
+    if len(games) == 0:
+        return None
+
+    goals_for = []
+    goals_against = []
+
+    for _, r in games.iterrows():
+        if r.team_a == team:
+            goals_for.append(r.ga)
+            goals_against.append(r.gb)
+        else:
+            goals_for.append(r.gb)
+            goals_against.append(r.ga)
+
+    return {
+        "avg_for": sum(goals_for) / len(goals_for),
+        "avg_against": sum(goals_against) / len(goals_against),
+        "variance": pd.Series(goals_for).var()
+    }
+
+# =========================
+# PONDÉRATION RÉCENTE
+# =========================
+def weighted_matches(df, team):
+    games = df[(df.team_a == team) | (df.team_b == team)].tail(10)
+    weights = []
+
+    for i in range(len(games)):
+        if i >= len(games) - 5:
+            weights.append(3)
+        elif i >= len(games) - 10:
+            weights.append(2)
+        else:
+            weights.append(1)
+
+    return games, weights
+
+# =========================
+# PRÉDICTION PRINCIPALE
+# =========================
+def predict_match(team_a, team_b):
+    df = load_data()
+    if len(df) < 5:
+        return None
+
+    prof_a = team_profile(team_a, df)
+    prof_b = team_profile(team_b, df)
+
+    if not prof_a or not prof_b:
+        return None
+
+    exp_a = (prof_a["avg_for"] + prof_b["avg_against"]) / 2
+    exp_b = (prof_b["avg_for"] + prof_a["avg_against"]) / 2
+
+    exp_a = round(exp_a)
+    exp_b = round(exp_b)
+
+    # Top scores probables
+    scores = []
+    for i in range(max(0, exp_a-1), exp_a+2):
+        for j in range(max(0, exp_b-1), exp_b+2):
+            scores.append(f"{i}-{j}")
+
+    counter = Counter(scores)
+    total = sum(counter.values())
+    top_scores = [(s, round(v/total*100,1)) for s,v in counter.most_common(5)]
+
+    winner = (
+        team_a if exp_a > exp_b
+        else team_b if exp_b > exp_a
+        else "Draw"
+    )
+
+    confidence = min(100, int((len(df)/30)*100))
+
+    return {
+        "winner": winner,
+        "expected_goals": f"{exp_a} - {exp_b}",
+        "top_scores": top_scores,
+        "confidence": confidence
+    }
+
+# =========================
+# SCORE DE CONFIANCE
+# =========================
+def confidence_level(c):
+    if c >= 70:
+        return "🟢 Élevée"
+    if c >= 40:
+        return "🟠 Moyenne"
+    return "🔴 Faible"
